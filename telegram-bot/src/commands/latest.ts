@@ -1,5 +1,6 @@
 import { Markup } from 'telegraf';
 import type { MyContext } from '../types/context.js';
+import type { PresionArterialRecord } from '../types/presion.js';
 import { formatDateForUser } from '../utils/dateUtils.js';
 import logger from '../utils/logger.js';
 import { createAdminClient } from '../services/supabase.js';
@@ -8,57 +9,48 @@ export async function latestCommand(ctx: MyContext) {
   if (!ctx.state.user) return ctx.reply('⚠️ Debes registrarte primero.');
 
   try {
-    // Usar admin client para evitar problemas de RLS en joins con users/subcategories si fuera necesario
-    // Aunque records debería ser accesible, los joins pueden complicarse.
-    // Probemos con adminClient para lectura segura.
     const adminClient = createAdminClient();
 
-    const { data: records, error } = await adminClient
-      .from('records')
+    // Obtener últimas presiones arteriales
+    const { data: presionRecords, error: presionError } = await adminClient
+      .from('presion_arterial_records')
       .select(`
+        id,
         recorded_at,
-        data,
-        subcategories ( name, icon, slug ),
+        sistolica,
+        diastolica,
+        pulso,
+        en_ayunas,
+        brazo,
         users ( first_name )
       `)
       .eq('household_id', ctx.state.user.household_id)
       .order('recorded_at', { ascending: false })
       .limit(10);
 
-    if (error) throw error;
+    if (presionError) throw presionError;
 
-    if (!records || records.length === 0) {
+    if (!presionRecords || presionRecords.length === 0) {
       return ctx.reply(
-        '📭 No hay registros aún.',
+        '📭 No hay registros de presión aún.',
         Markup.inlineKeyboard([
           [Markup.button.callback('📝 Registrar ahora', 'menu_register')]
         ])
       );
     }
 
-    let message = '📊 *Últimos Registros*\n\n';
+    let message = '📊 *Últimos Registros de Presión*\n\n';
 
-    records.forEach(r => {
-      // @ts-ignore
-      const subName = r.subcategories?.name;
-      // @ts-ignore
-      const icon = r.subcategories?.icon || '📄';
-      // @ts-ignore
-      const userName = r.users?.first_name;
-      const date = formatDateForUser(r.recorded_at);
+    presionRecords.forEach((record: any) => {
+      const userName = record.users?.first_name || 'Desconocido';
+      const date = formatDateForUser(record.recorded_at);
       
-      // Formateo simple de data según el tipo (hardcoded para MVP, luego dinámico)
-      let dataStr = '';
-      // @ts-ignore
-      if (r.subcategories?.slug === 'presion-arterial') {
-        const d = r.data as any;
-        dataStr = `🩸 ${d.sistolica}/${d.diastolica}`;
-        if (d.pulso) dataStr += ` | 💓 ${d.pulso}`;
-      } else {
-        dataStr = JSON.stringify(r.data);
-      }
+      let dataStr = `🩸 ${record.sistolica}/${record.diastolica} mmHg`;
+      if (record.pulso) dataStr += ` | 💓 ${record.pulso} bpm`;
+      if (record.brazo) dataStr += ` | 💪 ${record.brazo === 'izquierdo' ? 'Izq' : 'Der'}`;
+      if (record.en_ayunas !== null) dataStr += ` | 🍽️ ${record.en_ayunas ? 'Ayunas' : 'No ayunas'}`;
 
-      message += `${icon} *${subName}* - ${userName}\n`;
+      message += `📋 *${userName}*\n`;
       message += `📅 ${date}\n`;
       message += `${dataStr}\n\n`;
     });
@@ -72,7 +64,7 @@ export async function latestCommand(ctx: MyContext) {
     });
 
   } catch (error) {
-    logger.error({ error }, 'Error fetching latest records');
+    logger.error({ error }, 'Error fetching presion records');
     await ctx.reply('❌ Error al obtener registros.');
   }
 }

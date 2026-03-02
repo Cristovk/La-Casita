@@ -1,9 +1,9 @@
 import { Markup, Scenes } from 'telegraf';
 import type { MyContext } from '../types/context.js';
+import type { CreatePresionArterialRecord } from '../types/presion.js';
 import logger from '../utils/logger.js';
 import { parsePresionInput } from '../utils/parsers/presion.js';
 import { nowUTC } from '../utils/dateUtils.js';
-import { validateRecordData, formatValidationErrors } from '../services/dynamicValidator.js';
 
 // Nombre de la escena
 export const PRESION_SCENE_ID = 'PRESION_FLOW';
@@ -12,9 +12,10 @@ export const PRESION_SCENE_ID = 'PRESION_FLOW';
 const presionWizard = new Scenes.WizardScene<MyContext>(
   PRESION_SCENE_ID,
   
-  // PASO 1: Inicio / Selección de método
+// PASO 0: Inicializar sesión y mostrar opciones
   async (ctx) => {
     ctx.session.tempData = { presion: {} }; // Inicializar datos temporales
+    ctx.session.step = 'selecting_method';
     
     await ctx.reply(
       '📊 *Registro de Presión Arterial*\n\n' +
@@ -22,7 +23,7 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('⚡ Rápido (ej: 120/80 70)', 'method_quick')],
+          [Markup.button.callback('⚡ Rápido (ej: 120/80 75)', 'method_quick')],
           [Markup.button.callback('👣 Paso a paso', 'method_step')],
           [Markup.button.callback('❌ Cancelar', 'cancel_flow')]
         ])
@@ -50,8 +51,8 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
     if (action === 'method_quick') {
       await ctx.answerCbQuery();
       await ctx.reply('Escribe tu presión y pulso (ejemplo: *120/80 75*):', { parse_mode: 'Markdown' });
-      // Avanzamos al paso de captura rápida
-      ctx.wizard.selectStep(3); 
+      // Avanzamos al paso de captura rápida (PASO 3 en el archivo, índice 2 en el wizard)
+      ctx.wizard.selectStep(2);
       return;
     }
 
@@ -59,8 +60,8 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
     if (action === 'method_step') {
       await ctx.answerCbQuery();
       await ctx.reply('Ingresa la presión *SISTÓLICA* (la alta, ej: 120):', { parse_mode: 'Markdown' });
-      // Avanzamos al paso de captura sistólica
-      ctx.wizard.selectStep(4);
+      // Avanzamos al paso de captura sistólica (PASO 4 en archivo, índice 3 en wizard)
+      ctx.wizard.selectStep(3);
       return;
     }
 
@@ -75,9 +76,9 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
         const pulsoText = parsed.pulso ? ` | 💓 ${parsed.pulso}` : '';
         await ctx.reply(`✅ Leído: ${parsed.sistolica}/${parsed.diastolica}${pulsoText}`);
         
-        // Saltamos a Ayunas (paso 7), ya que Pulso (paso 6) ya se capturó o es opcional
-        ctx.wizard.selectStep(7);
-        return ctx.wizard.steps[7](ctx); 
+        // Ir a la pregunta de ayunas (se muestra al final del PASO 7, índice 6)
+        ctx.wizard.selectStep(6);
+        return ctx.wizard.steps[6](ctx); 
       } else {
         await ctx.reply('⚠️ Formato no reconocido. Usa "120/80 75" o selecciona una opción:');
         return;
@@ -107,9 +108,9 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
       const pulsoText = parsed.pulso ? ` | 💓 ${parsed.pulso}` : '';
       await ctx.reply(`✅ Leído: ${parsed.sistolica}/${parsed.diastolica}${pulsoText}`);
       
-      // Ir a Ayunas (saltando preguntas de pulso)
-      ctx.wizard.selectStep(7);
-      return ctx.wizard.steps[7](ctx);
+      // Ir a la pregunta de ayunas (se muestra al final del PASO 7, índice 6)
+      ctx.wizard.selectStep(6);
+      return ctx.wizard.steps[6](ctx);
     } else {
       await ctx.reply('⚠️ Formato inválido.\nIntenta: *120/80* ó *120/80 75*', { parse_mode: 'Markdown' });
       return;
@@ -179,11 +180,12 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
 
   // PASO 7: Capturar Pulso (O salta aquí desde Rápida)
   async (ctx) => {
-    // Si venimos de Rápida y ya tenemos pulso, saltar directo a Ayunas
-    if (ctx.session.tempData?.presion?.pulso && ctx.wizard.cursor === 7) {
-       // Estamos en el paso correcto pero ya tenemos el dato, mostramos siguiente pregunta
-       // No hacemos return, dejamos que fluya a mostrar pregunta de Ayunas
+    // Si venimos de Rápida y ya tenemos pulso, saltamos directo a Ayunas
+    if (ctx.session.tempData?.presion?.pulso) {
+       // Ya tenemos pulso, pasamos a la siguiente pregunta (Ayunas)
+       // Continuamos sin procesar entrada adicional
     } else {
+      // Estamos en el flujo paso a paso, esperamos entrada del usuario
       // @ts-ignore
       const text = ctx.message?.text;
       // @ts-ignore
@@ -191,7 +193,7 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
 
       if (action === 'skip_pulso') {
         await ctx.answerCbQuery();
-        // Continuar
+        // Continuar sin pulso
       } else if (text) {
         if (text.startsWith('/')) return; // Ignore commands
 
@@ -286,54 +288,39 @@ const presionWizard = new Scenes.WizardScene<MyContext>(
         const user = ctx.state.user;
         if (!user) throw new Error('User context missing');
 
-        // 1. Obtener subcategory_id para 'presion-arterial'
-        const { data: subcat, error: subError } = await ctx.supabase
-          .from('subcategories')
-          .select('id, fields:subcategory_fields(*)')
-          .eq('slug', 'presion-arterial')
-          .single();
+        logger.debug({ telegramId: user.telegram_id }, 'Saving presion record');
 
-        if (subError || !subcat) throw new Error('Subcategory not found');
-
-        // 2. Preparar datos
+        // Preparar datos para insertar en presion_arterial_records
         const rawData = ctx.session.tempData!.presion!;
-        // Asegurar tipos correctos para Zod (números ya parseados)
-        const recordData = {
-          sistolica: rawData.sistolica,
-          diastolica: rawData.diastolica,
-          pulso: rawData.pulso, // undefined si no existe, ok para optional
+        const presionRecord: CreatePresionArterialRecord = {
+          household_id: user.household_id,
+          user_id: user.id,
+          sistolica: rawData.sistolica!,
+          diastolica: rawData.diastolica!,
+          pulso: rawData.pulso,
           en_ayunas: rawData.en_ayunas,
-          brazo: rawData.brazo
+          brazo: rawData.brazo,
+          recorded_at: nowUTC().toISOString()
         };
 
-        // 3. Validar
-        // @ts-ignore
-        const validation = validateRecordData(subcat.fields, recordData);
-        
-        if (!validation.success) {
-          const errors = formatValidationErrors(validation.error);
-          await ctx.reply(`⚠️ Error de validación:\n${errors.join('\n')}`);
-          return ctx.scene.leave();
+        logger.debug({ presionRecord }, 'Presion record prepared for insert');
+
+        // Insertar directamente en presion_arterial_records
+        const { data: insertedRecord, error: insertError } = await ctx.supabase
+          .from('presion_arterial_records')
+          .insert(presionRecord)
+          .select();
+
+        if (insertError) {
+          throw new Error(`Insert failed: ${insertError.message}`);
         }
 
-        // 4. Insertar
-        const { error: insertError } = await ctx.supabase
-          .from('records')
-          .insert({
-            household_id: user.household_id,
-            user_id: user.id,
-            subcategory_id: subcat.id,
-            data: validation.data,
-            recorded_at: nowUTC().toISOString()
-          });
-
-        if (insertError) throw insertError;
-
-        await ctx.reply('✅ ¡Registro guardado exitosamente!');
+        logger.info({ recordId: insertedRecord?.[0]?.id }, 'Presion record saved successfully');
+        await ctx.reply('✅ ¡Registro de presión guardado exitosamente!');
         
       } catch (error) {
-        logger.error({ error }, 'Error saving record');
-        await ctx.reply('❌ Error al guardar en la base de datos.');
+        logger.error({ error }, 'Error saving presion record');
+        await ctx.reply(`❌ Error al guardar en la base de datos: ${error instanceof Error ? error.message : 'unknown error'}`);
       }
     }
 

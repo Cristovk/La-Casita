@@ -20,14 +20,14 @@ export const authMiddleware: Middleware<MyContext> = async (ctx, next) => {
   }
 
   try {
-    // 1. Crear cliente RLS para el contexto del usuario (para operaciones de negocio)
-    const userSupabase = await createSupabaseClient(telegramId);
-    ctx.supabase = userSupabase;
-
-    // 2. Usar cliente ADMIN para obtener el perfil del usuario de forma segura
-    // Esto evita problemas de "huevo y gallina" con RLS al intentar leer la propia tabla de usuarios
+    // 1. Crear cliente ADMIN para el bot.
+    // Nota: El enfoque RLS basado en set_config('app.telegram_id') no es confiable con PostgREST,
+    // porque cada request HTTP puede usar otra conexión y perder el contexto.
+    // Para el MVP, usamos SERVICE_ROLE en el backend del bot y aplicamos el aislamiento por household_id en la app.
     const authClient = adminClient || createAdminClient();
-    
+    ctx.supabase = authClient;
+
+    // 2. Obtener el perfil del usuario
     const { data: user, error } = await authClient
       .from('users')
       .select('*, households(name)')

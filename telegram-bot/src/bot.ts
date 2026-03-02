@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import type { MyContext } from './types/context.js';
 import logger from './utils/logger.js';
 import { SupabaseSessionStore } from './services/sessionStore.js';
-import { createSupabaseClient } from './services/supabase.js';
+import { createAdminClient } from './services/supabase.js';
 import { authMiddleware } from './middleware/auth.js';
 import { loggerMiddleware } from './middleware/logger.js';
 import { commandInterceptorMiddleware } from './middleware/commandInterceptor.js';
@@ -18,6 +18,7 @@ import { myHouseholdCommand } from './commands/myHousehold.js';
 import { registerCommand, startRegisterPresion, cancelRegister } from './commands/register.js';
 import { latestCommand } from './commands/latest.js';
 import { inviteCommand } from './commands/invite.js';
+import { debugCommand } from './commands/debug.js';
 
 // Scenes
 import presionWizard from './flows/presionFlow.js';
@@ -38,7 +39,8 @@ const stage = new Scenes.Stage<MyContext>([presionWizard]);
 setupErrorHandlers(bot);
 
 // Initialize Supabase for session store
-const supabase = await createSupabaseClient(); 
+// Usar admin client para que sessionStore funcione sin restricciones RLS
+const supabase = createAdminClient();
 
 // Middleware
 bot.use(session({
@@ -58,6 +60,7 @@ bot.command('mihogar', myHouseholdCommand);
 bot.command('registrar', registerCommand);
 bot.command('ultimos', latestCommand);
 bot.command('invitar', inviteCommand);
+bot.command('debug', debugCommand); // Solo desarrollo
 
 // Menu Actions (Callbacks)
 bot.action('create_household', handleCreateHousehold);
